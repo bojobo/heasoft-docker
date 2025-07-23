@@ -1,18 +1,10 @@
 ARG HEASOFT_VERSION
 
-FROM scratch AS downloader
-
-ARG HEASOFT_VERSION
-
-ADD https://heasarc.gsfc.nasa.gov/FTP/software/lheasoft/lheasoft${HEASOFT_VERSION}/heasoft-${HEASOFT_VERSION}src.tar.gz heasoft.tar.gz
-
-FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim AS base
-
-ENV UV_NO_CACHE=1 \
-    UV_SYSTEM_PYTHON=1
+FROM ghcr.io/astral-sh/uv:debian-slim AS base
 
 # Install HEASoft prerequisites
-ENV DEBIAN_FRONTEND=noninteractive
+ENV DEBIAN_FRONTEND=noninteractive 
+ENV UV_PROJECT_ENVIRONMENT=/home/python HEASOFT=/home/heasoft
 RUN apt-get update && apt-get upgrade -y && apt-get dist-upgrade -y && \
 	apt-get install -y --no-install-recommends \
     curl \
@@ -34,36 +26,32 @@ RUN apt-get update && apt-get upgrade -y && apt-get dist-upgrade -y && \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-RUN groupadd heasoft && useradd -r -m -g heasoft heasoft \
-    && mkdir -p /opt/heasoft \
-    && chown -R heasoft:heasoft /opt/heasoft
+ENV UV_LINK_MODE=copy UV_COMPILE_BYTECODE=1
 
-RUN uv pip install astropy numpy scipy matplotlib setuptools \
-    && uv cache clean
+RUN --mount=type=cache,target=/root/.cache/uv \
+    --mount=type=bind,source=uv.lock,target=uv.lock \
+    --mount=type=bind,source=pyproject.toml,target=pyproject.toml \
+    uv sync -p 3.12 --locked
 
 FROM base AS heasoft_builder
 
 ARG HEASOFT_VERSION
 
-ENV CC=/usr/bin/gcc CXX=/usr/bin/g++ FC=/usr/bin/gfortran
+ENV CC=/usr/bin/gcc CXX=/usr/bin/g++ FC=/usr/bin/gfortran PYTHON=${UV_PROJECT_ENVIRONMENT}/bin/python
 RUN unset CFLAGS CXXFLAGS FFLAGS LDFLAGS build_alias host_alias
 
 # Retrieve the HEASoft source code, unpack, configure,
 # make, install, clean up, and create symlinks....
-COPY --from=downloader --chown=heasoft:heasoft heasoft.tar.gz ./
-RUN tar xfz heasoft.tar.gz \
-    && cd heasoft-${HEASOFT_VERSION} \
-    && rm -r calet demo hitomixrism integral ixpe maxi nicer nustar suzaku swift
-
+ADD heasoft-${HEASOFT_VERSION}src.tar.gz .
 WORKDIR /heasoft-${HEASOFT_VERSION}/BUILD_DIR/
 
-RUN ./configure --prefix=/opt/heasoft 2>&1
+RUN ./configure --prefix=${HEASOFT} 2>&1
 RUN make 2>&1
 RUN make install 2>&1
-RUN /bin/bash -c 'cd /opt/heasoft/; for loop in *64*/*; do ln -sf $loop; done' \
-    && /bin/bash -c 'cd /opt/heasoft/bin; if test -f ${HOME}/heasoft-${HEASOFT_VERSION}/Xspec/BUILD_DIR/hmakerc; then cp ${HOME}/heasoft-${HEASOFT_VERSION}/Xspec/BUILD_DIR/hmakerc .; fi' \
-    && /bin/bash -c 'if test -f ${HOME}/heasoft-${HEASOFT_VERSION}/Xspec/src/spectral; then rm -rf ${HOME}/heasoft-${HEASOFT_VERSION}/Xspec/src/spectral; fi' \
-    && cd /opt/heasoft/bin \
+RUN /bin/bash -c 'cd ${HEASOFT}; for loop in *64*/*; do ln -sf $loop; done' \
+    && /bin/bash -c 'cd ${HEASOFT}bin; if test -f /heasoft-${HEASOFT_VERSION}/Xspec/BUILD_DIR/hmakerc; then cp /heasoft-${HEASOFT_VERSION}/Xspec/BUILD_DIR/hmakerc .; fi' \
+    && /bin/bash -c 'if test -f /heasoft-${HEASOFT_VERSION}/Xspec/src/spectral; then rm -rf /heasoft-${HEASOFT_VERSION}/Xspec/src/spectral; fi' \
+    && cd ${HEASOFT}/bin \
     && ln -sf ../BUILD_DIR/Makefile-std
 
 FROM base AS final
@@ -74,35 +62,33 @@ LABEL version="${HEASOFT_VERSION}" \
       description="HEASoft ${HEASOFT_VERSION} https://heasarc.gsfc.nasa.gov/lheasoft/" \
       maintainer="Bojan Todorkov"
 
-COPY --from=heasoft_builder --chown=heasoft:heasoft /opt/heasoft /opt/heasoft
+COPY --from=heasoft_builder ${HEASOFT} ${HEASOFT}
 
 ENV CC=/usr/bin/gcc CXX=/usr/bin/g++ FC=/usr/bin/gfortran \
-    PERLLIB=/opt/heasoft/lib/perl \
-    PERL5LIB=/opt/heasoft/lib/perl \
-    PYTHONPATH=/opt/heasoft/lib/python:/opt/heasoft/lib \
-    PATH=/opt/heasoft/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
-    HEADAS=/opt/heasoft \
-    LHEASOFT=/opt/heasoft \
-    FTOOLS=/opt/heasoft \
-    LD_LIBRARY_PATH=/opt/heasoft/lib \
+    PERLLIB=${HEASOFT}/lib/perl \
+    PERL5LIB=${HEASOFT}/lib/perl \
+    PYTHONPATH=${HEASOFT}/lib/python:${HEASOFT}/lib \
+    PATH=${UV_PROJECT_ENVIRONMENT}/bin:${HEASOFT}/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+    HEADAS=${HEASOFT} \
+    LHEASOFT=${HEASOFT} \
+    FTOOLS=${HEASOFT} \
+    LD_LIBRARY_PATH=${HEASOFT}/lib \
     LHEAPERL=/usr/bin/perl \
     PFCLOBBER=1 \
-    PFILES=/home/heasoft/pfiles;/opt/heasoft/syspfiles \
+    PFILES=/home/pfiles;${HEASOFT}/syspfiles \
     FTOOLSINPUT=stdin \
     FTOOLSOUTPUT=stdout \
-    LHEA_DATA=/opt/heasoft/refdata \
-    LHEA_HELP=/opt/heasoft/help \
+    LHEA_DATA=${HEASOFT}/refdata \
+    LHEA_HELP=${HEASOFT}/help \
     EXT=lnx \
-    PGPLOT_FONT=/opt/heasoft/lib/grfont.dat \
-    PGPLOT_RGB=/opt/heasoft/lib/rgb.txt \
-    PGPLOT_DIR=/opt/heasoft/lib \
-    POW_LIBRARY=/opt/heasoft/lib/pow \
-    XRDEFAULTS=/opt/heasoft/xrdefaults \
-    TCLRL_LIBDIR=/opt/heasoft/lib \
-    XANADU=/opt/heasoft \
-    XANBIN=/opt/heasoft
+    PGPLOT_FONT=${HEASOFT}/lib/grfont.dat \
+    PGPLOT_RGB=${HEASOFT}/lib/rgb.txt \
+    PGPLOT_DIR=${HEASOFT}/lib \
+    POW_LIBRARY=${HEASOFT}/lib/pow \
+    XRDEFAULTS=${HEASOFT}/xrdefaults \
+    TCLRL_LIBDIR=${HEASOFT}/lib \
+    XANADU=${HEASOFT} \
+    XANBIN=${HEASOFT}
 
-USER heasoft
-WORKDIR /home/heasoft
-RUN mkdir pfiles
+RUN mkdir /home/pfiles
 SHELL ["/bin/bash", "-c"]

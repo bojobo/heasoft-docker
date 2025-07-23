@@ -1,2 +1,8 @@
 .idea/
 heasoft-*/
+.venv/
+*src.tar.gz
+
+# Ignore OS-generated files
+.DS_Store
+Thumbs.db

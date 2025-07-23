@@ -1,0 +1,12 @@
+[project]
+name = "heasoft-docker"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "astropy>=7.0.1",
+    "matplotlib>=3.10.1",
+    "numpy>=2.2.3",
+    "pip>=25.0.1",
+    "scipy>=1.15.2",
+    "setuptools>=76.0.0",
+]
